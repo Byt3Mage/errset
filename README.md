@@ -256,14 +256,6 @@ assert_eq!(size_of::<set!(io::Error, Malformed)>(), size_of::<Result<(), io::Err
 
 `errset` is the result of my personal effort to make precise errors in Rust ergonomic. It started with an anonymous struct library, then to anonymous enums keyed by variant name, with set types encoded at the type level and conversions solved by inference, and then explored Zig-style error set composition. Restricting the idea to error handling only, and keying members by type rather than by name,  resulted in this design. Small, predictable and fully stable Rust.
 
-## Inspiration: eros
-
-This crate owes its core design to [eros](https://github.com/mcmah309/eros) by [mcmah309](https://github.com/mcmah309). eros showed that a tuple of error types makes a natural set type, that membership can be proven through inferred position indices, and that a method call before `?` is the way to make conversions work on stable Rust. `errset` adopts all three.
-
-
-
-Just like `thiserror`, `errset` composes naturally with `anyhow`. A good approach is to use `anyhow` for your catch-all error case at the application level, while using precise errors at the library level through `errset`. With this, you're not locked into one library and can mix-and-match freely.
-
 ## Inspiration and prior art
 `errset` owes its core design to two crates:
 
