@@ -35,13 +35,13 @@
 
 #![no_std]
 
-use core::error::Error;
-use core::fmt;
-use core::hash::{Hash, Hasher};
-
 #[cfg(doctest)]
 #[doc = include_str!("../README.md")]
 struct ReadmeDoctests;
+
+use core::error::Error;
+use core::fmt;
+use core::hash::{Hash, Hasher};
 
 mod sealed {
     pub trait Sealed {}
@@ -101,7 +101,7 @@ pub trait SubsetOf<Target: Set, Idx>: Set {
 }
 
 /// Type-level indices. They only appear in trait bounds and are always inferred.
-pub mod idx {
+pub mod index {
     use core::marker::PhantomData;
 
     macro_rules! markers {
@@ -113,11 +113,21 @@ pub mod idx {
     pub struct Member<I>(PhantomData<I>);
     /// Selects the conversion of a smaller set into a larger one.
     pub struct Subset<I>(PhantomData<I>);
+    /// Selects the conversion of a `named!` enum into a set or enum containing its members.
+    pub struct Named<I>(PhantomData<I>);
+}
+
+/// Items used by the code `named!` expands to. Not part of the public API.
+#[doc(hidden)]
+pub mod __private {
+    /// Required as a method argument by [`Target`](crate::Target) and
+    /// [`Named`](crate::Named), which only `named!` should implement.
+    pub struct Token;
 }
 
 /// One error out of the set `S`, stored inline without allocation.
 ///
-/// `Display`, `Debug`, and `Error::source` forward to the held member.
+/// `Display`, `Debug`, and `Error::source` are transparent: they forward to the member held.
 pub struct ErrorSet<S: Set>(S::Enum);
 
 impl<S: Set> ErrorSet<S> {
@@ -256,57 +266,110 @@ where
     }
 }
 
-/// Conversion into `ErrorSet<S>` from either a member error or a smaller set. Sealed.
-/// The two sources use distinct index wrappers, so the blanket impls never overlap.
+/// A type holding one error out of a member set: an [`ErrorSet`] or an enum declared with
+/// [`named!`]. Conversions into a `Target` accept any error or set whose members are all
+/// in [`Members`](Target::Members).
+///
+/// Implemented for every `ErrorSet` and by `named!`; not meant to be implemented by hand.
+pub trait Target: Sized {
+    /// The member tuple.
+    type Members: Set;
+
+    /// Builds `Self` from a set with exactly its members.
+    fn from_members(set: ErrorSet<Self::Members>) -> Self;
+
+    #[doc(hidden)]
+    fn __sealed(_: __private::Token);
+}
+
+impl<S: Set> Target for ErrorSet<S> {
+    type Members = S;
+
+    fn from_members(set: ErrorSet<S>) -> Self {
+        set
+    }
+
+    fn __sealed(_: __private::Token) {}
+}
+
+/// An enum declared with [`named!`], convertible to and from the set of its variant types.
+///
+/// Implemented by `named!`; not meant to be implemented by hand.
+pub trait Named: Target {
+    /// The set holding the same error as `self`.
+    fn into_members(self) -> ErrorSet<Self::Members>;
+
+    #[doc(hidden)]
+    fn __sealed(_: __private::Token);
+}
+
+/// Conversion into a [`Target`] from a member error, a smaller set, or a `named!` enum.
+/// Sealed. The three sources use distinct index wrappers, so the blanket impls never
+/// overlap.
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` cannot be converted into `ErrorSet<{S}>`",
-    note = "the source must be a member of `{S}`, or an `ErrorSet` whose members are all in `{S}`"
+    message = "`{Self}` cannot be converted into `{T}`",
+    note = "the source must be a member of `{T}`, or a set or `named!` enum whose members are all in `{T}`"
 )]
-pub trait IntoSet<S: Set, Idx> {
-    fn lift(self) -> ErrorSet<S>;
+pub trait IntoSet<T: Target, Idx> {
+    fn lift(self) -> T;
 
     #[doc(hidden)]
     fn __sealed(_: sealed::Token);
 }
 
-impl<E, S, I> IntoSet<S, idx::Member<I>> for E
+impl<E, T, I> IntoSet<T, index::Member<I>> for E
 where
-    S: Contains<E, I>,
+    T: Target,
+    T::Members: Contains<E, I>,
 {
-    fn lift(self) -> ErrorSet<S> {
-        ErrorSet(S::inject(self))
+    fn lift(self) -> T {
+        T::from_members(ErrorSet(T::Members::inject(self)))
     }
 
     fn __sealed(_: sealed::Token) {}
 }
 
-impl<Sub, S, I> IntoSet<S, idx::Subset<I>> for ErrorSet<Sub>
+impl<Sub, T, I> IntoSet<T, index::Subset<I>> for ErrorSet<Sub>
 where
-    Sub: SubsetOf<S, I>,
-    S: Set,
+    Sub: SubsetOf<T::Members, I>,
+    T: Target,
 {
-    fn lift(self) -> ErrorSet<S> {
-        ErrorSet(Sub::widen(self.0))
+    fn lift(self) -> T {
+        T::from_members(ErrorSet(Sub::widen(self.0)))
     }
 
     fn __sealed(_: sealed::Token) {}
 }
 
-/// Adds `.into_set()` to `Result`, converting its error into an `ErrorSet`.
+impl<N, T, I> IntoSet<T, index::Named<I>> for N
+where
+    N: Named,
+    N::Members: SubsetOf<T::Members, I>,
+    T: Target,
+{
+    fn lift(self) -> T {
+        T::from_members(ErrorSet(N::Members::widen(self.into_members().0)))
+    }
+
+    fn __sealed(_: sealed::Token) {}
+}
+
+/// Adds `.into_set()` to `Result`, converting its error into a [`Target`].
 ///
-/// Followed by `?`, the target set is inferred from the enclosing function's return type and
-/// the member position from the error type; `?` itself only performs the identity
-/// conversion.
+/// The target is taken from context, such as a type annotation or a returned value. When
+/// it is followed by `?` and the target is an `ErrorSet`, the function's return type
+/// decides it; for a `named!` enum, use [`try_!`] instead, because the enum's generated
+/// `From` impls leave `?` more than one candidate.
 pub trait ResultExt<T, E> {
-    fn into_set<S: Set, I>(self) -> Result<T, ErrorSet<S>>
+    fn into_set<Tg: Target, I>(self) -> Result<T, Tg>
     where
-        E: IntoSet<S, I>;
+        E: IntoSet<Tg, I>;
 }
 
 impl<T, E> ResultExt<T, E> for Result<T, E> {
-    fn into_set<S: Set, I>(self) -> Result<T, ErrorSet<S>>
+    fn into_set<Tg: Target, I>(self) -> Result<T, Tg>
     where
-        E: IntoSet<S, I>,
+        E: IntoSet<Tg, I>,
     {
         self.map_err(IntoSet::lift)
     }
@@ -352,7 +415,7 @@ macro_rules! positions {
     (@walk $Enum:ident [$($All:ident)*] [$($DT:ident $DV:ident)*]
         [$T:ident $V:ident $I:ident $J:ident] $([$RT:ident $RV:ident $RI:ident $RJ:ident])*
     ) => {
-        impl<$($All),*> Contains<$T, $crate::idx::$I> for ($($All,)*) {
+        impl<$($All),*> Contains<$T, $crate::index::$I> for ($($All,)*) {
             fn inject(value: $T) -> Self::Enum {
                 $Enum::$V(value)
             }
@@ -368,7 +431,7 @@ macro_rules! positions {
             fn __sealed(_: sealed::Token) {}
         }
 
-        impl<$($All),*> Narrow<$T, $crate::idx::$I> for ($($All,)*) {
+        impl<$($All),*> Narrow<$T, $crate::index::$I> for ($($All,)*) {
             type Rest = ($($DT,)* $($RT,)*);
 
             fn narrow(value: Self::Enum) -> Result<$T, <Self::Rest as Set>::Enum> {
@@ -472,8 +535,8 @@ sets!(@prefix []
     Set16 "16" R V15 I15 J15,
 );
 
-/// An `Err` holding the given error converted into the `ErrorSet` the context expects.
-/// Accepts a member error or a smaller set.
+/// An `Err` holding the given error converted into the `ErrorSet` or `named!` enum the
+/// context expects. Accepts a member error, a smaller set, or a `named!` enum.
 ///
 /// ```
 /// use errset::{err, errors, set};
@@ -505,7 +568,8 @@ macro_rules! err {
 }
 
 /// Returns an error from the enclosing function, converting it into the function's
-/// `ErrorSet`. Accepts a member error or a smaller set, like Zig's `return error.Name`.
+/// `ErrorSet` or `named!` enum. Accepts a member error, a smaller set, or a `named!` enum,
+/// like Zig's `return error.Name`.
 ///
 /// ```
 /// use errset::{catch, errors, fail, set};
@@ -565,8 +629,8 @@ macro_rules! set {
 }
 
 /// Zig-style `try`: evaluates to the `Ok` value, or converts the error into the enclosing
-/// function's `ErrorSet` and returns it. Accepts a member error or a smaller set.
-/// Equivalent to `catch!(expr, |err| fail!(err))`.
+/// function's `ErrorSet` or `named!` enum and returns it. Accepts a member error, a smaller
+/// set, or a `named!` enum. Equivalent to `catch!(expr, |err| fail!(err))`.
 ///
 /// ```
 /// use errset::{errors, fail, set, try_};
@@ -591,7 +655,12 @@ macro_rules! set {
 #[macro_export]
 macro_rules! try_ {
     ($result:expr) => {
-        $crate::ResultExt::into_set($result)?
+        match $result {
+            ::core::result::Result::Ok(value) => value,
+            ::core::result::Result::Err(error) => {
+                return ::core::result::Result::Err($crate::IntoSet::lift(error))
+            }
+        }
     };
 }
 
@@ -766,5 +835,165 @@ macro_rules! __error_message {
     };
     ($f:ident, $name:ident, $msg:literal $(, $arg:expr)*) => {
         $f.write_fmt(::core::format_args!($msg $(, $arg)*))
+    };
+}
+
+/// Declares a named error enum whose variants each hold one error type, and connects it to
+/// error sets.
+///
+/// Each variant must have exactly one unnamed field, and the field types must be distinct.
+/// The enum is emitted as written, so docs, attributes and derives such as
+/// `thiserror::Error` apply unchanged. `named!` adds:
+///
+/// - `From<T>` for each variant's type `T`, so plain `?` works for single member errors;
+/// - an inherent `from_set`, converting any `ErrorSet` whose members are all variant types;
+/// - an inherent `into_set`, converting into the `ErrorSet` of all variant types;
+/// - [`Target`] and [`Named`] impls, so [`try_!`], [`fail!`] and [`err!`] convert sets and
+///   other `named!` enums into it, and it converts into larger sets and enums.
+///
+/// ```
+/// use errset::{errors, fail, named, set, try_, ErrorSet};
+/// use std::{io, num::ParseIntError};
+///
+/// errors! {
+///     pub Malformed = "token is malformed";
+///     pub Refused = "connection refused";
+/// }
+///
+/// named! {
+///     /// Errors returned by the public API.
+///     #[derive(Debug)]
+///     pub enum LibraryError {
+///         Io(io::Error),
+///         Parse(ParseIntError),
+///         Malformed(Malformed),
+///         Refused(Refused),
+///     }
+/// }
+///
+/// fn parse(raw: &str) -> Result<u16, set!(ParseIntError, Malformed)> {
+///     if raw.is_empty() {
+///         fail!(Malformed);
+///     }
+///     Ok(try_!(raw.parse::<u16>()))
+/// }
+///
+/// pub fn connect(raw: &str) -> Result<u16, LibraryError> {
+///     let port = try_!(parse(raw));
+///     if port == 0 {
+///         fail!(Refused);
+///     }
+///     std::fs::metadata("/does/not/exist")?;
+///     Ok(port)
+/// }
+///
+/// assert!(matches!(connect(""), Err(LibraryError::Malformed(Malformed))));
+/// assert!(matches!(connect("0"), Err(LibraryError::Refused(Refused))));
+/// assert!(matches!(connect("80"), Err(LibraryError::Io(_))));
+///
+/// let set: set!(Refused, Malformed) = ErrorSet::new(Refused);
+/// assert!(matches!(LibraryError::from_set(set), LibraryError::Refused(Refused)));
+/// assert!(LibraryError::from(Malformed).into_set().is::<Malformed, _>());
+/// ```
+///
+/// A set with a member the enum lacks does not convert:
+///
+/// ```compile_fail
+/// use errset::{errors, fail, named, set};
+///
+/// errors! {
+///     pub Malformed;
+///     pub Expired;
+/// }
+///
+/// named! {
+///     pub enum ApiError {
+///         Malformed(Malformed),
+///     }
+/// }
+///
+/// fn parse() -> Result<(), set!(Malformed, Expired)> {
+///     fail!(Expired)
+/// }
+///
+/// fn api() -> Result<(), ApiError> {
+///     errset::try_!(parse());
+///     Ok(())
+/// }
+/// ```
+#[macro_export]
+macro_rules! named {
+    (
+        $(#[$attr:meta])*
+        $vis:vis enum $Name:ident {
+            $( $(#[$vattr:meta])* $Variant:ident ( $(#[$fattr:meta])* $T:ty ) ),* $(,)?
+        }
+    ) => {
+        $(#[$attr])*
+        $vis enum $Name {
+            $( $(#[$vattr])* $Variant($(#[$fattr])* $T), )*
+        }
+
+        $(
+            impl ::core::convert::From<$T> for $Name {
+                fn from(error: $T) -> Self {
+                    $Name::$Variant(error)
+                }
+            }
+        )*
+
+        impl $crate::Target for $Name {
+            type Members = ($($T,)*);
+
+            fn from_members(set: $crate::ErrorSet<Self::Members>) -> Self {
+                $crate::__named_from_set!(set; $Name; $($Variant $T),*)
+            }
+
+            fn __sealed(_: $crate::__private::Token) {}
+        }
+
+        impl $crate::Named for $Name {
+            fn into_members(self) -> $crate::ErrorSet<Self::Members> {
+                match self {
+                    $( $Name::$Variant(error) => $crate::ErrorSet::new(error), )*
+                }
+            }
+
+            fn __sealed(_: $crate::__private::Token) {}
+        }
+
+        impl $Name {
+            /// Converts any error set whose members are all variant types of this enum.
+            #[allow(dead_code)]
+            $vis fn from_set<S, I>(set: $crate::ErrorSet<S>) -> Self
+            where
+                S: $crate::Set + $crate::SubsetOf<($($T,)*), I>,
+            {
+                <Self as $crate::Target>::from_members(set.widen())
+            }
+
+            /// The error set of all variant types, holding the same error as `self`.
+            #[allow(dead_code)]
+            $vis fn into_set(self) -> $crate::ErrorSet<($($T,)*)> {
+                <Self as $crate::Named>::into_members(self)
+            }
+        }
+    };
+}
+
+/// Builds a `named!` enum from its member set by narrowing off one variant type at a time.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __named_from_set {
+    ($set:expr; $Name:ident;) => {
+        $crate::ErrorSet::<()>::unreachable($set)
+    };
+    ($set:expr; $Name:ident; $Variant:ident $T:ty $(, $RestVariant:ident $RestT:ty)*) => {
+        match $set.narrow::<$T, _>() {
+            ::core::result::Result::Ok(error) => $Name::$Variant(error),
+            ::core::result::Result::Err(rest) => {
+                $crate::__named_from_set!(rest; $Name; $($RestVariant $RestT),*)
+            }
+        }
     };
 }

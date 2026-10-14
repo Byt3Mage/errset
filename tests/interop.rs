@@ -1,4 +1,4 @@
-use errset::{ErrorSet, errors, set, try_};
+use errset::{errors, set, try_, ErrorSet};
 use std::{error::Error, io};
 
 errors! { pub Expired = "expired"; }

@@ -1,4 +1,4 @@
-use errset::{ErrorSet, ResultExt, Set3, set};
+use errset::{set, ErrorSet, ResultExt, Set3};
 use std::{error::Error, io};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
@@ -114,12 +114,10 @@ fn widening_reorders() {
         connect("1.ok", 5, false).unwrap_err().to_string(),
         "token has expired"
     );
-    assert!(
-        connect("9.ok", 1, false)
-            .unwrap_err()
-            .narrow::<io::Error, _>()
-            .is_ok()
-    );
+    assert!(connect("9.ok", 1, false)
+        .unwrap_err()
+        .narrow::<io::Error, _>()
+        .is_ok());
 }
 
 #[test]
@@ -149,7 +147,7 @@ fn inspecting_without_consuming() {
 
 #[test]
 fn exhaustive_match() {
-    match parse_token("1.ok", 5).unwrap_err().as_enum() {
+    match parse_token("1.ok", 5).unwrap_err().into_enum() {
         Set3::V0(Malformed) => panic!(),
         Set3::V1(Expired) => {}
         Set3::V2(BadSignature) => panic!(),
