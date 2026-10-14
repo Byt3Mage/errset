@@ -81,7 +81,7 @@ assert!(load_token("/does/not/exist").unwrap_err().is::<io::Error, _>());
 
 ```toml
 [dependencies]
-errset = "0.1"
+errset = "0.2"
 ```
 
 ### Declaring errors
