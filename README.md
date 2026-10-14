@@ -263,7 +263,7 @@ assert_eq!(size_of::<set!(io::Error, Malformed)>(), size_of::<Result<(), io::Err
 - [eros](https://github.com/mcmah309/eros), expands that idea with `ErrorUnion`. It adds a catch-all `AnyError`, attached context and backtraces, and the method-before-`?` pattern (`.union()?`) that makes conversions work on stable Rust.
 
 `errset` takes the tuple-keyed sets and inferred indices from terrors and eros.
-However, it's different in one deliberate choice: terrors and eros store the error type-erased in a `Box`, while `errset` stores it inline as a plain enum. Boxing makes reshaping a set free and enables eros's catch-all type and diagnostics. Storing inline instead means no allocation, no `alloc` requirement, narrowing by `match` rather than downcast, and members that don't need to be `'static`.
+However, terrors and eros store the error type-erased in a `Box`, while `errset` stores it inline as a plain enum. Boxing makes reshaping a set free and enables eros's catch-all type and diagnostics. Storing inline instead means no allocation, no `alloc` requirement, narrowing by `match` rather than downcast, and members that don't need to be `'static`.
 
 | | errset | eros | terrors |
 | --- | --- | --- | --- |
